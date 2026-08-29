@@ -326,6 +326,77 @@ def _update_revenue_range_id() -> None:
     _conn.execute("DROP TABLE IF EXISTS tmp_revenue_range")
 
 
+# Fill unmatched company_id via normalize_company_name; mark company_metched Fuzzy.
+def _company_fuzzy_match() -> None:
+    _conn.execute(
+        """
+        UPDATE _build_silver_articles AS bs
+        SET
+            company_id = src.id,
+            company_metched = 'Fuzzy',
+            updated_at = CURRENT_TIMESTAMP
+        FROM (
+            SELECT
+                a.article_id,
+                d.id
+            FROM bronze_articles a
+            JOIN dim_company d
+                ON (
+                    normalize_company_name(d.company_name)
+                    = normalize_company_name(a.company_name)
+                    OR normalize_company_compact(d.company_name)
+                    = normalize_company_compact(a.company_name)
+                    OR len(list_intersect(
+                        company_name_aliases(a.company_name),
+                        company_name_aliases(d.company_name)
+                    )) > 0
+                    OR (
+                        length(normalize_company_compact(a.company_name)) >= 4
+                        AND length(normalize_company_compact(d.company_name)) >= 4
+                        AND (
+                            position(
+                                normalize_company_compact(a.company_name)
+                                IN normalize_company_compact(d.company_name)
+                            ) > 0
+                            OR position(
+                                normalize_company_compact(d.company_name)
+                                IN normalize_company_compact(a.company_name)
+                            ) > 0
+                        )
+                    )
+                )
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY a.article_id
+                ORDER BY
+                    CASE
+                        WHEN normalize_company_name(d.company_name)
+                             = company_name_aliases(a.company_name)[-1]
+                        THEN 0
+                        ELSE 1
+                    END,
+                    d.id
+            ) = 1
+        ) AS src
+        WHERE bs.company_id IS NULL
+          AND bs.article_id = src.article_id
+          AND bs.is_current = TRUE
+        """
+    )
+    _conn.execute(
+        """
+        UPDATE _build_silver_articles AS bs
+        SET
+            company_metched = a.company_name,
+            updated_at = CURRENT_TIMESTAMP
+        FROM bronze_articles a
+        WHERE bs.company_id IS NULL
+          AND bs.is_current = TRUE
+          AND bs.article_id = a.article_id
+          AND a.batch_id = bs.insert_batch_id
+        """
+    )
+
+
 # Build _build_silver_articles from bronze_articles and current dimension keys.
 # article_ids in this run: expire prior current rows, then insert is_current=true.
 # article_ids not in this run: leave is_current unchanged.
@@ -342,6 +413,7 @@ def _build_silver_articles() -> None:
             src.article_id,
             src.title,
             src.company_id,
+            src.company_metched,
             src.published_date_as_source,
             src.published_date,
             src.category_id,
@@ -365,6 +437,7 @@ def _build_silver_articles() -> None:
                 b.article_id,
                 b.title,
                 c.id AS company_id,
+                CASE WHEN c.id IS NOT NULL THEN 'Exact' END AS company_metched,
                 b.published_date AS published_date_as_source,
                 parse_date(b.published_date) AS published_date,
                 cat.id AS category_id,
@@ -405,7 +478,7 @@ def _build_silver_articles() -> None:
     _conn.execute(
         """
         INSERT INTO _build_silver_articles (
-            observation_id, article_id, title, company_id,
+            observation_id, article_id, title, company_id, company_metched,
             published_date_as_source, published_date, category_id,
             revenue_as_source, revenue_currency, revenue_actual, revenue_actual_usd,
             revenue_min_currency, revenue_min_actual_usd,
@@ -415,7 +488,7 @@ def _build_silver_articles() -> None:
             insert_batch_id, updated_batch_id, inserted_at, updated_at, is_current
         )
         SELECT
-            observation_id, article_id, title, company_id,
+            observation_id, article_id, title, company_id, company_metched,
             published_date_as_source, published_date, category_id,
             revenue_as_source, revenue_currency, revenue_actual, revenue_actual_usd,
             revenue_min_currency, revenue_min_actual_usd,
@@ -428,7 +501,7 @@ def _build_silver_articles() -> None:
         """
     )
     inserted = _conn.execute("SELECT COUNT(*) FROM tmp_build_silver_articles").fetchone()[0]
-    
+    _company_fuzzy_match()
     _update_revenue_parsed()
     _update_revenue_usd()
     _update_revenue_range_id()

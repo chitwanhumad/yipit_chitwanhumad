@@ -47,14 +47,11 @@ CREATE TABLE IF NOT EXISTS dim_company (
     updated_at         TIMESTAMP
 );
 
-ALTER TABLE dim_company ADD COLUMN IF NOT EXISTS insert_batch_id INTEGER;
-ALTER TABLE dim_company ADD COLUMN IF NOT EXISTS updated_batch_id INTEGER;
-ALTER TABLE dim_company ADD COLUMN IF NOT EXISTS inserted_at TIMESTAMP;
-ALTER TABLE dim_company ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP;
 
 CREATE TABLE IF NOT EXISTS dim_category (
     id               INTEGER,
     name             VARCHAR,
+    category_group   VARCHAR,
     insert_datetime  TIMESTAMP
 );
 
@@ -107,11 +104,32 @@ SELECT * FROM (
 ) AS v(range_id, min_revenue_usd, max_revenue_usd, range_name, range_order)
 WHERE NOT EXISTS (SELECT 1 FROM dim_revenue_range);
 
+CREATE TABLE IF NOT EXISTS dim_date (
+    date_id      INTEGER,
+    date         DATE,
+    year         INTEGER,
+    month        INTEGER,
+    day          INTEGER,
+    quarter_no   INTEGER
+);
+
+INSERT INTO dim_date (date_id, date, year, month, day, quarter_no)
+SELECT
+    year(d) * 10000 + month(d) * 100 + day(d) AS date_id,
+    d AS date,
+    year(d) AS year,
+    month(d) AS month,
+    day(d) AS day,
+    quarter(d) AS quarter_no
+FROM generate_series(DATE '2020-01-01', DATE '2026-12-31', INTERVAL 1 DAY) AS t(d)
+WHERE NOT EXISTS (SELECT 1 FROM dim_date);
+
 CREATE TABLE IF NOT EXISTS _build_silver_articles (
     observation_id       INTEGER,
     article_id           STRING,
     title                STRING,
     company_id           INTEGER,
+    company_metched      STRING,
     published_date_as_source STRING,
     published_date       DATE,
     category_id          INTEGER,
@@ -135,6 +153,7 @@ CREATE TABLE IF NOT EXISTS _build_silver_articles (
     is_current           BOOLEAN
 );
 
+
 CREATE TABLE IF NOT EXISTS dim_currency_conversion (
     id INTEGER,
     base_currency VARCHAR,
@@ -157,3 +176,65 @@ SELECT 4, 'USD', 1.0, TRUE
 WHERE NOT EXISTS (
     SELECT 1 FROM dim_currency_conversion WHERE base_currency = 'USD'
 );
+
+CREATE OR REPLACE MACRO normalize_company_name(name) AS
+    regexp_replace(
+        regexp_replace(
+            lower(trim(CAST(name AS VARCHAR))),
+            '\s*\([^)]*\)',
+            '',
+            'g'
+        ),
+        '\s+(corporation|corp\.?|incorporated|inc\.?|limited|ltd\.?|llc|plc|gmbh|ag|co\.?|company|group|holdings|technologies|research|labs)\.?\s*$',
+        '',
+        'g'
+    );
+
+CREATE OR REPLACE MACRO normalize_company_compact(name) AS
+    regexp_replace(normalize_company_name(name), '[^a-z0-9]', '', 'g');
+
+CREATE OR REPLACE MACRO company_name_initials(name) AS
+    lower(regexp_replace(
+        regexp_replace(normalize_company_name(name), '([^[:space:]])[^[:space:]]*', '\1', 'g'),
+        '\s+',
+        '',
+        'g'
+    ));
+
+CREATE OR REPLACE MACRO company_name_synonyms(name) AS
+    CASE
+        WHEN normalize_company_compact(name) IN (
+            'facebook', 'facebookai', 'facebookairesearch'
+        ) THEN ['meta ai', 'metaai']
+        WHEN normalize_company_compact(name) IN (
+            'azure', 'microsoftazure'
+        ) THEN ['microsoft']
+        ELSE CAST([] AS VARCHAR[])
+    END;
+
+CREATE OR REPLACE MACRO company_name_aliases(name) AS
+    list_distinct(list_concat(
+        list_concat(
+            list_transform(
+                regexp_split_to_array(CAST(name AS VARCHAR), '\s*/\s*'),
+                x -> normalize_company_name(x)
+            ),
+            list_transform(
+                regexp_split_to_array(CAST(name AS VARCHAR), '\s*/\s*'),
+                x -> normalize_company_compact(x)
+            )
+        ),
+        list_concat(
+            list_filter(
+                [
+                    normalize_company_compact(name),
+                    company_name_initials(name),
+                    normalize_company_compact(
+                        regexp_extract(CAST(name AS VARCHAR), '\(([^)]+)\)', 1)
+                    )
+                ],
+                x -> x IS NOT NULL AND length(x) > 0
+            ),
+            company_name_synonyms(name)
+        )
+    ));
