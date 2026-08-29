@@ -30,3 +30,14 @@ The Spark UI at http://localhost:4040 is only available **while the job is runni
 - `dbscript/` — SQL
 - `document/` and `sample_data/` — notes and samples
 - `venv/` — local Python environment (not in git)
+
+### If any issue with pyspark module installation on windows
+
+# Activate venv
+.\venv\Scripts\Activate.ps1
+
+# Then upgrade setuptools
+python -m pip install --upgrade pip setuptools wheel
+
+# Install requirements
+pip install -r requirements.txt
