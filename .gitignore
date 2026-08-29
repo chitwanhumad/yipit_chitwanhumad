@@ -225,3 +225,6 @@ derby.log
 _SUCCESS
 .DS_Store
 
+# Local machine paths
+config/config.ini
+
