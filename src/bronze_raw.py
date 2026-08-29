@@ -14,6 +14,10 @@ from src.spark import get_path, load_config
 config = load_config()
 source_data = get_path("source_data", config)
 
+# Pipeline connections from main.run(); set in run().
+_conn: duckdb.DuckDBPyConnection | None = None
+_spark: SparkSession | None = None
+
 # Schema evaluation. Define the columns that are expected in the bronze_articles table.
 ARTICLE_COLUMNS = [
     "article_id",
@@ -77,8 +81,8 @@ def _assert_article_schema(columns: list[str], file_name: str) -> None:
 
 
 # Next batch_id is 1 on the first load, then MAX(batch_id) + 1 for each new run.
-def _next_batch_id(conn: duckdb.DuckDBPyConnection) -> int:
-    row = conn.execute(
+def _next_batch_id() -> int:
+    row = _conn.execute(
         "SELECT COALESCE(MAX(batch_id), 0) + 1 FROM bronze_articles"
     ).fetchone()
     return int(row[0])
@@ -86,18 +90,13 @@ def _next_batch_id(conn: duckdb.DuckDBPyConnection) -> int:
 
 # Add file_name, file mtime, load timestamp, and batch_id, then insert into bronze_articles.
 # Reads CSV only; other files under source_data are skipped.
-def _insert_articles(
-    spark: SparkSession,
-    conn: duckdb.DuckDBPyConnection,
-    csv_path: Path,
-    batch_id: int,
-) -> None:
+def _insert_articles(csv_path: Path, batch_id: int) -> None:
     if not _is_csv_file(csv_path):
         print(f"Bronze: skip {csv_path.name}, not a CSV file")
         return
 
     df = (
-        spark.read.format("csv")
+        _spark.read.format("csv")
         .option("header", True)
         .option("inferSchema", False)
         .load(str(csv_path))
@@ -108,7 +107,7 @@ def _insert_articles(
 
     # Skip insert when this exact file (name + mtime) was already loaded.
     # Same name with a newer timestamp is treated as a new file and will insert.
-    already_loaded = conn.execute(
+    already_loaded = _conn.execute(
         """
         SELECT 1
         FROM bronze_articles
@@ -137,8 +136,8 @@ def _insert_articles(
     )
     # Collect the Spark DataFrame to pandas so DuckDB can register and INSERT it.
     pdf = staged.toPandas()
-    conn.register("tmp_bronze_articles", pdf)
-    conn.execute(
+    _conn.register("tmp_bronze_articles", pdf)
+    _conn.execute(
         """
         INSERT INTO bronze_articles
         SELECT
@@ -148,7 +147,7 @@ def _insert_articles(
         FROM tmp_bronze_articles
         """
     )
-    conn.unregister("tmp_bronze_articles")
+    _conn.unregister("tmp_bronze_articles")
     print(
         f"Bronze: loaded {len(pdf)} rows from {csv_path.name} "
         f"into bronze_articles (batch_id={batch_id})"
@@ -181,11 +180,7 @@ def _assert_company_schema(payload: object, file_name: str) -> None:
 # Flatten company_name keys, add file metadata, insert into bronze_company_metadata.
 # Reads JSON only. Same file_name + file_timestamp is skipped to avoid duplicates.
 # New data for a company_name: set the prior current row to false, then insert is_current=true.
-def _insert_company_metadata(
-    spark: SparkSession,
-    conn: duckdb.DuckDBPyConnection,
-    json_path: Path,
-) -> None:
+def _insert_company_metadata(json_path: Path) -> None:
     if not _is_json_file(json_path):
         print(f"Bronze: skip {json_path.name}, not a JSON file")
         return
@@ -196,7 +191,7 @@ def _insert_company_metadata(
     file_timestamp = datetime.fromtimestamp(json_path.stat().st_mtime)
 
     # Skip insert when this exact file (name + mtime) was already loaded.
-    already_loaded = conn.execute(
+    already_loaded = _conn.execute(
         """
         SELECT 1
         FROM bronze_company_metadata
@@ -229,7 +224,7 @@ def _insert_company_metadata(
         for company_name, attrs in payload.items()
     ]
     staged = (
-        spark.createDataFrame(rows, COMPANY_SCHEMA)
+        _spark.createDataFrame(rows, COMPANY_SCHEMA)
         .withColumn("file_name", lit(json_path.name))
         .withColumn("file_timestamp", lit(file_timestamp))
         .withColumn("insert_datetime", current_timestamp())
@@ -237,9 +232,9 @@ def _insert_company_metadata(
     )
     # Collect the Spark DataFrame to pandas so DuckDB can register and INSERT it.
     pdf = staged.toPandas()
-    conn.register("tmp_bronze_company_metadata", pdf)
+    _conn.register("tmp_bronze_company_metadata", pdf)
     # Keep one current row per company_name: expire the previous current version first.
-    conn.execute(
+    _conn.execute(
         """
         UPDATE bronze_company_metadata
         SET is_current = FALSE
@@ -249,7 +244,7 @@ def _insert_company_metadata(
           )
         """
     )
-    conn.execute(
+    _conn.execute(
         """
         INSERT INTO bronze_company_metadata
         SELECT
@@ -259,15 +254,18 @@ def _insert_company_metadata(
         FROM tmp_bronze_company_metadata
         """
     )
-    conn.unregister("tmp_bronze_company_metadata")
+    _conn.unregister("tmp_bronze_company_metadata")
     print(
         f"Bronze: loaded {len(pdf)} rows from {json_path.name} "
         "into bronze_company_metadata (is_current=true)"
     )
 
 
-# Read landing CSVs and JSON from source_data into bronze. Connections come from main.
+# Read landing CSVs and JSON from source_data into bronze. Reuse connections from main.
 def run(spark: SparkSession, conn: duckdb.DuckDBPyConnection) -> None:
+    global _conn, _spark
+    _conn = conn
+    _spark = spark
     print("### Data Ingetion starts #####")
     print(f"Bronze: raw ingest from {source_data}")
     csv_files = sorted(path for path in source_data.rglob("*.csv") if path.is_file())
@@ -278,9 +276,9 @@ def run(spark: SparkSession, conn: duckdb.DuckDBPyConnection) -> None:
         raise FileNotFoundError(f"No JSON files found under {source_data}. Pipeline stopped.")
 
     # One batch_id per pipeline run; skipped files do not consume a new id.
-    batch_id = _next_batch_id(conn)
+    batch_id = _next_batch_id()
     for csv_path in csv_files:
-        _insert_articles(spark, conn, csv_path, batch_id)
+        _insert_articles(csv_path, batch_id)
     for json_path in json_files:
-        _insert_company_metadata(spark, conn, json_path)
+        _insert_company_metadata(json_path)
     print("### Data Ingetion ends #####")
