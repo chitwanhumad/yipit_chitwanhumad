@@ -529,6 +529,7 @@ def _build_fact_silver_articles() -> None:
             s.article_id,
             s.title,
             cat.category_group AS category_group,
+            cat.name AS category_name,
             CASE
                 WHEN s.company_metched = 'Exact' THEN 'Exact'
                 WHEN s.company_metched = 'Fuzzy' THEN 'Fuzzy'
@@ -604,4 +605,4 @@ def export_silver_tables() -> None:
     _conn.execute("SELECT * FROM silver_articles").df().to_csv(
         output_data / "silver_articles.csv", index=False
     )
-    print("Silver: file has been refreshed")
+    print("Silver: file has been exported")
