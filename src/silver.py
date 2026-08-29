@@ -7,9 +7,10 @@ from src.bin._currency_conversion import get_usd_arr
 from src.bin._date_parser import parse_date
 from src.bin._revenue_parser import normalize_revenue
 from src.bin._revenue_range import get_revenue_range_id
-from src.spark import load_config
+from src.spark import get_path, load_config
 
 config = load_config()
+output_data = get_path("output_data", config)
 
 # Pipeline DuckDB connection from main.run(); set in run().
 _conn: duckdb.DuckDBPyConnection | None = None
@@ -540,6 +541,7 @@ def _build_fact_silver_articles() -> None:
             COALESCE(s.revenue_min_actual_usd, s.revenue_actual_usd) AS revenue_min_usd,
             COALESCE(s.revenue_max_actual_usd, s.revenue_actual_usd) AS revenue_max_usd,
             s.revenue_actual_usd,
+            rng.range_order AS revenue_range_order,
             rng.range_name AS revenue_range_name,
             co.industry,
             co.founded_year,
@@ -590,3 +592,16 @@ def run(spark: SparkSession, conn: duckdb.DuckDBPyConnection) -> None:
     _build_dim_company()
     _build_silver_articles()
     _build_fact_silver_articles()
+    export_silver_tables()
+
+
+# Write current silver tables to CSV under output_data.
+def export_silver_tables() -> None:
+    output_data.mkdir(parents=True, exist_ok=True)
+    _conn.execute("SELECT * FROM _build_silver_articles").df().to_csv(
+        output_data / "_build_silver_articles.csv", index=False
+    )
+    _conn.execute("SELECT * FROM silver_articles").df().to_csv(
+        output_data / "silver_articles.csv", index=False
+    )
+    print("Silver: file has been refreshed")
