@@ -55,30 +55,59 @@ CREATE TABLE IF NOT EXISTS dim_category (
     insert_datetime  TIMESTAMP
 );
 
-INSERT INTO dim_category (id, name, insert_datetime)
+ALTER TABLE dim_category ADD COLUMN IF NOT EXISTS category_group VARCHAR;
+
+INSERT INTO dim_category (id, name, category_group, insert_datetime)
 SELECT * FROM (
     VALUES
-        (1, 'Finance', CURRENT_TIMESTAMP),
-        (2, 'Cybersecurity', CURRENT_TIMESTAMP),
-        (3, 'Enterprise Software', CURRENT_TIMESTAMP),
-        (4, 'Data Analytics', CURRENT_TIMESTAMP),
-        (5, 'InfoSec', CURRENT_TIMESTAMP),
-        (6, 'Machine Learning', CURRENT_TIMESTAMP),
-        (7, 'Software', CURRENT_TIMESTAMP),
-        (8, 'Cloud', CURRENT_TIMESTAMP),
-        (9, 'FinTech', CURRENT_TIMESTAMP),
-        (10, 'AI/ML', CURRENT_TIMESTAMP),
-        (11, 'Financial Technology', CURRENT_TIMESTAMP),
-        (12, 'Analytics', CURRENT_TIMESTAMP),
-        (13, 'Security', CURRENT_TIMESTAMP),
-        (14, 'AI & ML', CURRENT_TIMESTAMP),
-        (15, 'Artificial Intelligence', CURRENT_TIMESTAMP),
-        (16, 'Big Data', CURRENT_TIMESTAMP),
-        (17, 'SaaS', CURRENT_TIMESTAMP),
-        (18, 'Cloud Services', CURRENT_TIMESTAMP),
-        (19, 'Cloud Computing', CURRENT_TIMESTAMP)
-) AS v(id, name, insert_datetime)
+        (1,  'Finance',                 'Finance',   CURRENT_TIMESTAMP),
+        (2,  'Cybersecurity',           'Security',  CURRENT_TIMESTAMP),
+        (3,  'Enterprise Software',     'Software',  CURRENT_TIMESTAMP),
+        (4,  'Data Analytics',          'Analytics', CURRENT_TIMESTAMP),
+        (5,  'InfoSec',                 'Security',  CURRENT_TIMESTAMP),
+        (6,  'Machine Learning',        'AI/ML',     CURRENT_TIMESTAMP),
+        (7,  'Software',                'Software',  CURRENT_TIMESTAMP),
+        (8,  'Cloud',                   'Cloud',     CURRENT_TIMESTAMP),
+        (9,  'FinTech',                 'Finance',   CURRENT_TIMESTAMP),
+        (10, 'AI/ML',                   'AI/ML',     CURRENT_TIMESTAMP),
+        (11, 'Financial Technology',    'Finance',   CURRENT_TIMESTAMP),
+        (12, 'Analytics',               'Analytics', CURRENT_TIMESTAMP),
+        (13, 'Security',                'Security',  CURRENT_TIMESTAMP),
+        (14, 'AI & ML',                 'AI/ML',     CURRENT_TIMESTAMP),
+        (15, 'Artificial Intelligence', 'AI/ML',     CURRENT_TIMESTAMP),
+        (16, 'Big Data',                'Analytics', CURRENT_TIMESTAMP),
+        (17, 'SaaS',                    'Software',  CURRENT_TIMESTAMP),
+        (18, 'Cloud Services',          'Cloud',     CURRENT_TIMESTAMP),
+        (19, 'Cloud Computing',         'Cloud',     CURRENT_TIMESTAMP)
+) AS v(id, name, category_group, insert_datetime)
 WHERE NOT EXISTS (SELECT 1 FROM dim_category);
+
+UPDATE dim_category
+SET category_group = v.category_group
+FROM (
+    VALUES
+        (1,  'Finance'),
+        (2,  'Security'),
+        (3,  'Software'),
+        (4,  'Analytics'),
+        (5,  'Security'),
+        (6,  'AI/ML'),
+        (7,  'Software'),
+        (8,  'Cloud'),
+        (9,  'Finance'),
+        (10, 'AI/ML'),
+        (11, 'Finance'),
+        (12, 'Analytics'),
+        (13, 'Security'),
+        (14, 'AI/ML'),
+        (15, 'AI/ML'),
+        (16, 'Analytics'),
+        (17, 'Software'),
+        (18, 'Cloud'),
+        (19, 'Cloud')
+) AS v(id, category_group)
+WHERE dim_category.id = v.id
+  AND dim_category.category_group IS NULL;
 
 CREATE TABLE IF NOT EXISTS dim_revenue_range (
     range_id           INTEGER,

@@ -517,6 +517,71 @@ def _build_silver_articles() -> None:
     print("### Silver articles build ends #####")
 
 
+# Current-row fact table: article measures plus company, category, date, and range dims.
+def _build_fact_silver_articles() -> None:
+    print("### Silver silver_articles fact table starts #####")
+    _conn.execute(
+        """
+        CREATE OR REPLACE TABLE silver_articles AS
+        SELECT
+            s.observation_id,
+            s.article_id,
+            s.title,
+            cat.category_group AS category_group,
+            CASE
+                WHEN s.company_metched = 'Exact' THEN 'Exact'
+                WHEN s.company_metched = 'Fuzzy' THEN 'Fuzzy'
+                ELSE 'Not matched'
+            END AS company_matched,
+            CASE
+                WHEN s.company_metched IN ('Exact', 'Fuzzy') THEN co.company_name
+                ELSE s.company_metched
+            END AS company_name,
+            COALESCE(s.revenue_min_actual_usd, s.revenue_actual_usd) AS revenue_min_usd,
+            COALESCE(s.revenue_max_actual_usd, s.revenue_actual_usd) AS revenue_max_usd,
+            s.revenue_actual_usd,
+            rng.range_name AS revenue_range_name,
+            co.industry,
+            co.founded_year,
+            year(current_date) - co.founded_year AS company_age,
+            co.headquarters,
+            co.employee_count,
+            CASE
+                WHEN co.is_public = TRUE THEN 'Public'
+                WHEN co.is_public = FALSE THEN 'Private'
+                ELSE 'Unknown'
+            END AS public_private_status,
+            co.stock_ticker,
+            concat_ws(' - ', co.industry, cat.category_group)
+                AS industry_category,
+            s.published_date,
+            CASE
+                WHEN co.employee_count < 10000 THEN 'Small'
+                WHEN co.employee_count <= 30000 THEN 'Medium'
+                WHEN co.employee_count > 30000 THEN 'Large'
+                ELSE 'Unknown'
+            END AS company_size_category,
+            dt.year,
+            dt.month,
+            strftime(s.published_date, '%b') AS mon,
+            concat('Q', CAST(dt.quarter_no AS VARCHAR)) AS quarter_no
+        FROM _build_silver_articles s
+        LEFT JOIN dim_company co
+            ON co.id = s.company_id
+        LEFT JOIN dim_category cat
+            ON cat.id = s.category_id
+        LEFT JOIN dim_revenue_range rng
+            ON rng.range_id = s.revenue_range_id
+        LEFT JOIN dim_date dt
+            ON dt.date = s.published_date
+        WHERE s.is_current = TRUE
+        """
+    )
+    rows = _conn.execute("SELECT COUNT(*) FROM silver_articles").fetchone()[0]
+    print(f"Silver: silver_articles fact table has {rows} current rows")
+    print("### Silver silver_articles fact table ends #####")
+
+
 # Validate, type, and dedupe bronze into silver. Reuse the connection from main.
 def run(spark: SparkSession, conn: duckdb.DuckDBPyConnection) -> None:
     global _conn
@@ -524,3 +589,4 @@ def run(spark: SparkSession, conn: duckdb.DuckDBPyConnection) -> None:
     print("Silver: clean and conform bronze data")
     _build_dim_company()
     _build_silver_articles()
+    _build_fact_silver_articles()
