@@ -44,6 +44,7 @@ def run(spark: SparkSession, conn: duckdb.DuckDBPyConnection) -> None:
     conn.unregister("tmp_gold_fact_arr_observation")
     print("Gold: gold_fact_arr_observation created")
     export_gold_table()
+    export_gold_use_case_ai_arr()
 
 
 # Write current gold table to CSV under output_data.
@@ -53,3 +54,35 @@ def export_gold_table() -> None:
         output_data / "ai_articles_enriched.csv", index=False
     )
     print("Gold: file has been exported")
+
+
+# AI/ML articles, 2022-2024, valid ARR over $50M USD.
+GOLD_USE_CASE_AI_ARR_SQL = """
+SELECT *
+FROM gold_fact_arr_observation
+WHERE (
+        category_group = 'AI/ML'
+        OR lower(COALESCE(category_name, '')) IN (
+            'machine learning',
+            'ai/ml',
+            'ai & ml',
+            'artificial intelligence'
+        )
+        OR lower(COALESCE(industry, '')) IN (
+            'ai/ml',
+            'machine learning',
+            'artificial intelligence'
+        )
+    )
+  AND year BETWEEN 2022 AND 2024
+  AND arr_usd IS NOT NULL
+  AND arr_usd > 50000000
+"""
+
+
+def export_gold_use_case_ai_arr() -> None:
+    output_data.mkdir(parents=True, exist_ok=True)
+    csv_path = output_data / "ai_ml_arr_gt_50m_2022_2024.csv"
+    pdf = _conn.execute(GOLD_USE_CASE_AI_ARR_SQL).df()
+    pdf.to_csv(csv_path, index=False)
+    print(f"Gold: file has been exported ({len(pdf)} rows)")

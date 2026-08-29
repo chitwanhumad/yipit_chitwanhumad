@@ -9,7 +9,19 @@ from pyspark.sql import SparkSession
 from src.bronze_raw import run as run_bronze
 from src.gold import run as run_gold
 from src.silver import run as run_silver
-from src.spark import get_duckdb_connection, get_spark_session
+from src.spark import get_duckdb_connection, get_path, get_spark_session, load_config
+
+
+# Create config path folders if they are missing (data/in, data/out, warehouse parent).
+def ensure_config_folders() -> None:
+    config = load_config()
+    get_path("source_data", config).mkdir(parents=True, exist_ok=True)
+    get_path("output_data", config).mkdir(parents=True, exist_ok=True)
+    get_path("duckdb_path", config).parent.mkdir(parents=True, exist_ok=True)
+    warehouse_dir = get_path("PROJECT_ROOT", config) / config["spark"].get(
+        "warehouse_dir", "spark-warehouse"
+    )
+    warehouse_dir.mkdir(parents=True, exist_ok=True)
 
 
 # Run medallion layers in order. Spark and DuckDB are opened once in main.
@@ -22,6 +34,7 @@ def run(spark: SparkSession, conn: duckdb.DuckDBPyConnection) -> None:
 
 # Open Spark and DuckDB, run the pipeline, then close both connections.
 def main() -> None:
+    ensure_config_folders()
     spark = get_spark_session()
     conn = get_duckdb_connection()
     try:
