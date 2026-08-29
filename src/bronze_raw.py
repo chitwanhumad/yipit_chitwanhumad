@@ -76,12 +76,21 @@ def _assert_article_schema(columns: list[str], file_name: str) -> None:
         )
 
 
-# Add file_name, file mtime, and load timestamp, then insert into bronze_articles.
+# Next batch_id is 1 on the first load, then MAX(batch_id) + 1 for each new run.
+def _next_batch_id(conn: duckdb.DuckDBPyConnection) -> int:
+    row = conn.execute(
+        "SELECT COALESCE(MAX(batch_id), 0) + 1 FROM bronze_articles"
+    ).fetchone()
+    return int(row[0])
+
+
+# Add file_name, file mtime, load timestamp, and batch_id, then insert into bronze_articles.
 # Reads CSV only; other files under source_data are skipped.
 def _insert_articles(
     spark: SparkSession,
     conn: duckdb.DuckDBPyConnection,
     csv_path: Path,
+    batch_id: int,
 ) -> None:
     if not _is_csv_file(csv_path):
         print(f"Bronze: skip {csv_path.name}, not a CSV file")
@@ -124,6 +133,7 @@ def _insert_articles(
         .withColumn("file_name", lit(csv_path.name))
         .withColumn("file_timestamp", lit(file_timestamp))
         .withColumn("insert_datetime", current_timestamp())
+        .withColumn("batch_id", lit(batch_id))
     )
     # Collect the Spark DataFrame to pandas so DuckDB can register and INSERT it.
     pdf = staged.toPandas()
@@ -134,12 +144,15 @@ def _insert_articles(
         SELECT
             article_id, title, company_name, published_date, category,
             revenue, summary, url, author, word_count,
-            file_name, file_timestamp, insert_datetime
+            file_name, file_timestamp, insert_datetime, batch_id
         FROM tmp_bronze_articles
         """
     )
     conn.unregister("tmp_bronze_articles")
-    print(f"Bronze: loaded {len(pdf)} rows from {csv_path.name} into bronze_articles")
+    print(
+        f"Bronze: loaded {len(pdf)} rows from {csv_path.name} "
+        f"into bronze_articles (batch_id={batch_id})"
+    )
 
 
 # Fail the pipeline if a company object is missing required value fields.
@@ -167,6 +180,7 @@ def _assert_company_schema(payload: object, file_name: str) -> None:
 
 # Flatten company_name keys, add file metadata, insert into bronze_company_metadata.
 # Reads JSON only. Same file_name + file_timestamp is skipped to avoid duplicates.
+# New data for a company_name: set the prior current row to false, then insert is_current=true.
 def _insert_company_metadata(
     spark: SparkSession,
     conn: duckdb.DuckDBPyConnection,
@@ -219,22 +233,37 @@ def _insert_company_metadata(
         .withColumn("file_name", lit(json_path.name))
         .withColumn("file_timestamp", lit(file_timestamp))
         .withColumn("insert_datetime", current_timestamp())
+        .withColumn("is_current", lit(True))
     )
     # Collect the Spark DataFrame to pandas so DuckDB can register and INSERT it.
     pdf = staged.toPandas()
     conn.register("tmp_bronze_company_metadata", pdf)
+    # Keep one current row per company_name: expire the previous current version first.
+    conn.execute(
+        """
+        UPDATE bronze_company_metadata
+        SET is_current = FALSE
+        WHERE is_current = TRUE
+          AND company_name IN (
+              SELECT company_name FROM tmp_bronze_company_metadata
+          )
+        """
+    )
     conn.execute(
         """
         INSERT INTO bronze_company_metadata
         SELECT
             company_name, founded_year, headquarters, employee_count,
             industry, is_public, stock_ticker,
-            file_name, file_timestamp, insert_datetime
+            file_name, file_timestamp, insert_datetime, is_current
         FROM tmp_bronze_company_metadata
         """
     )
     conn.unregister("tmp_bronze_company_metadata")
-    print(f"Bronze: loaded {len(pdf)} rows from {json_path.name} into bronze_company_metadata")
+    print(
+        f"Bronze: loaded {len(pdf)} rows from {json_path.name} "
+        "into bronze_company_metadata (is_current=true)"
+    )
 
 
 # Read landing CSVs and JSON from source_data into bronze. Connections come from main.
@@ -248,8 +277,10 @@ def run(spark: SparkSession, conn: duckdb.DuckDBPyConnection) -> None:
     if not json_files:
         raise FileNotFoundError(f"No JSON files found under {source_data}. Pipeline stopped.")
 
+    # One batch_id per pipeline run; skipped files do not consume a new id.
+    batch_id = _next_batch_id(conn)
     for csv_path in csv_files:
-        _insert_articles(spark, conn, csv_path)
+        _insert_articles(spark, conn, csv_path, batch_id)
     for json_path in json_files:
         _insert_company_metadata(spark, conn, json_path)
     print("### Data Ingetion ends #####")

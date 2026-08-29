@@ -1,5 +1,6 @@
 """Entry point: start connections and run bronze → silver → gold."""
 
+import sys
 from datetime import datetime
 
 import duckdb
@@ -26,6 +27,13 @@ def main() -> None:
     try:
         run(spark, conn)
         print("Pipeline executed successfully")
+    except ValueError as exc:
+        message = str(exc)
+        if "Schema mismatch" in message:
+            print(f"ERROR: {message}")
+            print("Pipeline stopped.")
+            sys.exit(1)
+        raise
     finally:
         conn.close()
         spark.stop()

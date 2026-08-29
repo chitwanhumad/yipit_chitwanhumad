@@ -28,8 +28,10 @@ CREATE TABLE IF NOT EXISTS bronze_articles (
     word_count         STRING,
     file_name          STRING,
     file_timestamp     TIMESTAMP,
-    insert_datetime    TIMESTAMP
+    insert_datetime    TIMESTAMP,
+    batch_id           INTEGER
 );
+
 
 CREATE TABLE IF NOT EXISTS bronze_company_metadata (
     company_name       VARCHAR,
@@ -41,5 +43,6 @@ CREATE TABLE IF NOT EXISTS bronze_company_metadata (
     stock_ticker       VARCHAR,
     file_name          VARCHAR,
     file_timestamp     TIMESTAMP,
-    insert_datetime    TIMESTAMP
+    insert_datetime    TIMESTAMP,
+    is_current         BOOLEAN
 );
