@@ -1,3 +1,17 @@
+-- log table for bronze csv and json files status
+CREATE TABLE IF NOT EXISTS bronze_file_log (
+    batch_id        INTEGER,
+    file_name       VARCHAR,
+    reason          VARCHAR,
+    status          VARCHAR,
+    quarantined_at  TIMESTAMP,
+    processed_at    TIMESTAMP,
+    alert_processed VARCHAR
+);
+
+UPDATE bronze_file_log SET alert_processed = 'N' WHERE alert_processed IS NULL
+    OR lower(cast(alert_processed AS VARCHAR)) IN ('false', 'f', '0');
+
 -- bronze tables
 CREATE TABLE IF NOT EXISTS bronze_articles (
     article_id       STRING,
